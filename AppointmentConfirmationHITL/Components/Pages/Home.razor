@@ -1,0 +1,54 @@
+﻿@page "/"
+
+<h5 class="text-shadow">Tool Calling ...  Booking Appointments Example (Human in the Loop Approval)</h5>
+
+<style>
+	.text-shadow {
+		text-shadow: 2px 2px 6px rgba(0,0,0,0.25);
+	}
+</style>
+
+<button class="btn btn-info mb-3" @onclick="() => showHelp = true">Application Details</button>
+
+@*Application Details Section*@
+@if (showHelp)
+{
+	<div class="alert alert-info border border-primary shadow-sm" style="max-width: 1000px; margin: 2rem auto 1.5rem auto; font-size: 0.75rem; position: relative;">
+		<button type="button" class="btn-close" aria-label="Close" style="position: absolute; top: 10px; right: 10px;" @onclick="() => showHelp = false"></button>
+		<strong>About this page:</strong><br />
+		In this example we are giving our agent access to 6 tools ... <i>But</i> <b>we insist on Human confirmation before Finalizing the Appointment Booking</b>
+		<ul>
+			<li><b>ListAvailableDates</b> - Returns all available appointment dates for the clinic</li>
+			<li><b>GetNextAvailableAppointment</b> - Returns the next available appointment date/time for the clinic</li>
+			<li><b>BookAppointment</b> - Books an appointment for a specified date/time</li>
+			<li><b>CancelAppointment</b> - Cancels an existing appointment </li>
+			<li><b>ListBookedAppointments</b> - Lists all upcoming appointments </li>
+			<li><b>FindAppointmentsByName</b> - Finds all appointments for a given patient name </li>
+		</ul>
+		<hr />
+		<b>Human-in-the-Loop Approval Technique:</b>
+		<ul>
+			<li>
+				<b>ApprovalRequiredAIFunction:</b> To require human approval before booking an appointment, we wrap the <code>AIFunction</code> instance for <code>BookAppointment</code> in an <code>ApprovalRequiredAIFunction</code> instance. This signals to the agent that this tool cannot be executed without explicit user confirmation.
+			</li>
+			<li>
+				<b>Agent Tool Registration:</b> When creating the agent, we add the <code>approvalRequired</code> tool (the wrapped function) to the agent's list of tools, instead of the direct <code>BookAppointment</code> function.
+			</li>
+			<li>
+				<b>Approval Request Detection:</b> After the agent processes a user prompt, we check the response for any <code>ToolApprovalRequestContent</code> instances...
+			</li>
+			<li>
+				<b>Approval Flow:</b> When an approval is required, we set a <code>requestFlag</code> to <code>true</code> and store the approval request content. The UI then prompts the user to approve or reject the action. On the next user input, we respond to the agent with the user's decision.
+			</li>
+			<li>
+				<b>Result Handling:</b> If the user approves, the agent proceeds with the booking. If rejected, the agent responds accordingly and may prompt for alternative dates.
+			</li>
+		</ul>
+		<div style="font-size:0.95em; margin-top:0.5em;">
+			This approach ensures that critical actions, like booking appointments, always require explicit human approval, providing a safe and auditable workflow for sensitive operations.
+		</div>
+	</div>
+}
+@code {
+	private bool showHelp = false;
+}

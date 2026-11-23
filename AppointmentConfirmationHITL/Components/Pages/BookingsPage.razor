@@ -1,0 +1,174 @@
+﻿@page "/bookingspage"
+
+@using Microsoft.Extensions.AI
+@using OpenAI
+@using Microsoft.Agents.AI
+@using OpenAI.Responses
+
+
+@*User Input Section*@
+<div class="mb-3">
+	<label for="userInput">Enter your Appointment Request ... include your Name please </label>
+	<input @bind="userPrompt" id="userInput" class="form-control" placeholder="Use Natural Language Prompts ... See what happens" style="max-width: 50vw;" />
+	<button @onclick="() => SubmitTimePrompt()" class="btn btn-primary mt-3">@buttonText</button>
+	<button @onclick="ClearAll" class="btn btn-secondary mt-3">Clear All</button>
+
+	@if (isLoading)
+	{
+		<img src="/images/running.gif" alt="Loading..." style="width:32px; height:32px; margin-left:10px;" />
+	}
+
+</div>
+
+@* Chat History Section  *@
+@if (chatHistory.Any())
+{
+	<div class="alert alert-info" style="background-color: #f8f9fa;">
+		@foreach (var entry in chatHistory.AsEnumerable().Reverse())
+		{
+			<div style="background-color: #e3f2fd; border-radius: 6px; margin-bottom: 0.5rem; padding: 0.75rem;">
+				<strong>@entry.Role:</strong>
+				<span>@((MarkupString)entry.Text)</span>
+			</div>
+		}
+	</div>
+}
+
+@code {
+
+	const string apiKey = "Api-Key";
+	const string model = "gpt-4o-mini"; 
+
+	private string userPrompt = string.Empty;
+	private string? responseText = null;
+
+	private string buttonText = "Send to ChatGPT";
+	private bool isLoading = false;                                 
+
+	private List<(string Role, string Text)> chatHistory = new();   
+	
+	private AIAgent? agent;
+	private AgentSession? session;  //Maintains the conversation context with the agent
+	private AgentResponse? response;
+
+	// Stores the function approval request content
+	private ToolApprovalRequestContent? requestContent;
+
+	private bool requestFlag = false;
+
+	private async Task SubmitTimePrompt()
+	{
+		if (string.IsNullOrWhiteSpace(userPrompt))
+		{
+			return;
+		}
+
+		//When using functions, it's possible to indicate for each function, whether it requires human approval before being executed.
+		// This is done by wrapping the AIFunction instance in an ApprovalRequiredAIFunction instance.
+		AIFunction bookingFunction = AIFunctionFactory.Create(BookingService.BookAppointment);
+		AIFunction approvalRequired = new ApprovalRequiredAIFunction(bookingFunction);
+
+		buttonText = "Sending...";
+		isLoading = true;
+
+
+		OpenAI.OpenAIClient client = new OpenAIClient(apiKey);
+		ResponsesClient responseClient = client.GetResponsesClient();
+
+		//agent setup has access to 6 Booking related tools and instructions
+		//the BookAppointment tool requires human approval before execution
+		agent = responseClient.AsAIAgent(
+				model: model,
+				name: "BookingAgent",
+				instructions: "You are an AI Bot that can call 6 Booking Tools related to booking appointments at a Medical Clinic."
+				+ "When displaying dates do not include the time" + "You can only answer questions related to bookings at the Clinic and have the ability to access all 30 available dates"
+				+ "If the user enters a possible appointment instead of asking for the next available date, it must include the month, day and year "
+				+ " and be in the range of acceptable appointment dates"
+				+ "Since all bookings require approval, if the user does not approve the booking , respond in a friendly manner and ask if there is any other date they may wish to book ",
+				tools:
+				[
+					AIFunctionFactory.Create(BookingService.ListAvailableDates),
+					AIFunctionFactory.Create(BookingService.GetNextAvailableDate),
+					AIFunctionFactory.Create(BookingService.CancelAppointment),
+					//AIFunctionFactory.Create(BookingService.BookAppointment),
+					approvalRequired,
+					AIFunctionFactory.Create(BookingService.ListBookedAppointments),
+					AIFunctionFactory.Create(BookingService.FindAppointmentsByName)
+				]
+			);
+
+		session ??= await agent!.CreateSessionAsync();
+		
+		chatHistory.Add(("User", userPrompt));
+
+		//if we need approval to proceed then create the approval message
+		//First time through requestFlag is false so we go to the else block and let the agent process the user prompt
+		//If the agent determines that it needs to call a function that requires approval it will return a FunctionApprovalRequestContent
+		if (requestFlag)
+		{					
+			// Simple check for negative responses
+			var negativeResponses = new[] { "no", "stop", "cancel", "reject", "deny" };
+			bool isApproved = !negativeResponses.Any(x => userPrompt.Trim().ToLower().Contains(x));
+
+			var approvalMessage = new ChatMessage(ChatRole.User, [requestContent!.CreateResponse(isApproved)]);
+			response = await agent.RunAsync(approvalMessage, session);
+			requestFlag = false;
+		}
+		else
+		{
+			// Create user message with HTML formatting request
+			ChatMessage message = new ChatMessage(ChatRole.User, userPrompt + " where possible formatted the response nicely in HTML");			
+			response = await agent.RunAsync(message, session);
+		}
+
+		// Since we now have a function that requires approval, the agent might respond with a request for approval,
+		// instead of executing the function directly and returning the result.
+		// We must check the response content for any FunctionApprovalRequestContent instances,
+		// which indicates that the agent requires user approval for a function.	
+		var functionApprovalRequests = response.Messages
+			.SelectMany(x => x.Contents)
+			.OfType<ToolApprovalRequestContent>()
+			.ToList();
+		
+		//If there are any function approval requests,
+		// the detail of the function call including name and arguments can be found in the FunctionCall
+		// property on the FunctionApprovalRequestContent instance.
+		// This can be shown to the user, so that they can decide whether to approve or reject the function call.
+		if (functionApprovalRequests.Any())
+		{
+			// For simplicity, we will just take the first approval request					
+			requestContent = functionApprovalRequests.First();
+
+			// Add assistant message to chat history indicating that approval is required for the function call		
+			var toolName = (requestContent.ToolCall as FunctionCallContent)?.Name ?? "the requested tool";
+			chatHistory.Add(("Assistant", "We require approval to execute " + toolName));
+
+			// Set the request flag to true to indicate that we are awaiting user approval
+			// which we will handle on the next SubmitTimePrompt() call with our if block (if requestFlag)
+			requestFlag = true;
+
+			// Update UI state reset loading indicators and button text
+			buttonText = "Send to ChatGPT";
+			isLoading = false;
+			userPrompt = string.Empty;
+			
+			return;
+		}
+
+		// Add assistant message to chat history
+		chatHistory.Add(("Assistant", response.Text));
+
+		buttonText = "Send to ChatGPT";
+		isLoading = false;
+		
+		// Clear the user prompt for the next input
+		userPrompt = string.Empty;
+	}
+
+	private void ClearAll()
+	{
+		userPrompt = string.Empty;
+		session = null;
+		chatHistory.Clear();
+	}
+}
